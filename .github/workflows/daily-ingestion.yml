@@ -1,0 +1,38 @@
+name: Daily NSE market ingestion
+
+on:
+  schedule:
+    - cron: "30 11 * * 1-5"
+  workflow_dispatch:
+
+concurrency:
+  group: daily-market-ingestion
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Install NSE ingestion dependency
+        run: python -m pip install "curl-cffi>=0.13,<1"
+      - name: Refresh public market snapshot
+        run: python scripts/daily_ingestion.py
+      - name: Commit refreshed data
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add market-data.json
+          if git diff --staged --quiet; then
+            echo "NSE snapshot already current"
+          else
+            git commit -m "data: refresh NSE indices"
+            git push
+          fi
