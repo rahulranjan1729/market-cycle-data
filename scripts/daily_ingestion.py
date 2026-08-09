@@ -42,6 +42,9 @@ ALIASES = {
     "NIFTY OIL & GAS": ["NIFTY OIL AND GAS"],
 }
 
+MARKET_CAP_BASE_DATE = "2026-03-31"
+MARKET_CAP_PROXY = "NIFTY 500"
+
 
 def fetch_snapshot() -> dict[str, dict]:
     session = requests.Session(impersonate="chrome131")
@@ -113,6 +116,66 @@ def candidates(name: str) -> list[str]:
     return list(dict.fromkeys(value.upper() for value in expanded))
 
 
+def date_key(value: str) -> str:
+    for pattern in ("%Y-%m-%d", "%d-%b-%y"):
+        try:
+            return datetime.strptime(value, pattern).strftime("%Y-%m-%d")
+        except ValueError:
+            pass
+    return value
+
+
+def point_at_or_before(history: list[dict], date: str) -> dict | None:
+    target = date_key(date)
+    return next(
+        (point for point in reversed(history) if date_key(point.get("date", "")) <= target),
+        None,
+    )
+
+
+def update_macro(payload: dict) -> None:
+    """Roll market cap forward from the FY26 year-end base using NIFTY 500."""
+    macro = payload.get("macro")
+    if not isinstance(macro, dict):
+        return
+    proxy = next(
+        (item for item in payload.get("instruments", []) if item.get("name") == MARKET_CAP_PROXY),
+        None,
+    )
+    if not proxy or not proxy.get("history"):
+        return
+
+    base_point = point_at_or_before(proxy["history"], MARKET_CAP_BASE_DATE)
+    latest_point = proxy["history"][-1]
+    if not base_point or not base_point.get("close") or not latest_point.get("close"):
+        return
+
+    base_lakh_crore = macro.get("marketCapBaseLakhCrore")
+    if not base_lakh_crore:
+        previous_date = macro.get("marketCapDate")
+        previous_point = point_at_or_before(proxy["history"], previous_date) if previous_date else None
+        previous_cap = macro.get("marketCapLakhCrore")
+        if not previous_point or not previous_point.get("close") or not previous_cap:
+            return
+        base_lakh_crore = float(previous_cap) * float(base_point["close"]) / float(previous_point["close"])
+
+    current_lakh_crore = float(base_lakh_crore) * float(latest_point["close"]) / float(base_point["close"])
+    gdp_lakh_crore = float(macro.get("gdpLakhCrore") or 0)
+    macro.update(
+        {
+            "marketCapCrore": round(current_lakh_crore * 100_000, 2),
+            "marketCapLakhCrore": round(current_lakh_crore, 2),
+            "marketCapDate": latest_point["date"],
+            "marketCapBaseLakhCrore": round(float(base_lakh_crore), 2),
+            "marketCapBaseDate": MARKET_CAP_BASE_DATE,
+            "marketCapMethod": f"{MARKET_CAP_PROXY} change from FY26 year-end base",
+            "buffettRatio": round(current_lakh_crore / gdp_lakh_crore * 100, 2)
+            if gdp_lakh_crore
+            else None,
+        }
+    )
+
+
 def update_payload(payload: dict, nse: dict[str, dict]) -> tuple[list[str], list[str], list[str]]:
     updated: list[str] = []
     unchanged: list[str] = []
@@ -170,6 +233,7 @@ def update_payload(payload: dict, nse: dict[str, dict]) -> tuple[list[str], list
             }
         )
 
+    update_macro(payload)
     payload["generatedAt"] = datetime.now(UTC).isoformat()
     payload["source"] = "NSE Indices Daily Snapshot"
     return updated, unchanged, missing
