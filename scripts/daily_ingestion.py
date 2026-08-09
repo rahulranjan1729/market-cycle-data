@@ -55,6 +55,7 @@ GDP_ESTIMATE_SOURCE = "World Bank India Development Update, April 2026"
 GDP_ESTIMATE_SOURCE_URL = "https://thedocs.worldbank.org/en/doc/4262e1e15b463ecb360cec4ad78cf062-0310012026/original/April-2026-India-Development-Update.pdf"
 BSE_URL = "https://m.bseindia.com/"
 CCIL_URL = "https://www.ccilindia.com/web/ccil/tenorwise-indicative-yields"
+RBI_URL = "https://www.rbi.org.in/"
 
 
 def fetch_snapshot() -> dict[str, dict]:
@@ -145,7 +146,14 @@ def fetch_macro_snapshot() -> dict[str, float | str]:
     yield_date = yield_match.group(1)
     if yield_date[2] == "-":
         yield_date = datetime.strptime(yield_date, "%d-%m-%Y").strftime("%Y-%m-%d")
-    return {"marketCapCrore": float(market_cap_match.group(1).replace(",", "")), "marketCapDate": market_date, "bondYield": float(yield_match.group(2)), "bondYieldDate": yield_date}
+    rbi_response = session.get(RBI_URL, headers=headers, timeout=30)
+    rbi_response.raise_for_status()
+    fx_match = re.search(r"INR\s*/\s*1 USD.*?<td[^>]*>\s*:\s*([\d.]+)", rbi_response.text, re.DOTALL)
+    fx_date_match = re.search(r"As at .*? of ([A-Za-z]+ \d{2}, \d{4})", rbi_response.text)
+    if not fx_match or not fx_date_match:
+        raise RuntimeError("RBI USD/INR reference rate was not found")
+    fx_date = datetime.strptime(fx_date_match.group(1), "%B %d, %Y").strftime("%Y-%m-%d")
+    return {"marketCapCrore": float(market_cap_match.group(1).replace(",", "")), "marketCapDate": market_date, "bondYield": float(yield_match.group(2)), "bondYieldDate": yield_date, "usdInrRate": float(fx_match.group(1)), "usdInrDate": fx_date}
 
 
 def update_macro(payload: dict, snapshot: dict[str, float | str]) -> None:
@@ -157,9 +165,10 @@ def update_macro(payload: dict, snapshot: dict[str, float | str]) -> None:
     market_cap_lakh_crore = market_cap_crore / 100_000
     market_date = str(snapshot["marketCapDate"])
     elapsed_days = max(0, (datetime.fromisoformat(market_date) - datetime.fromisoformat(GDP_BASE_DATE)).days)
-    gdp_base_lakh_crore = GDP_BASE_USD_TRILLION * GDP_BASE_USD_INR
     nominal_growth_rate = (1 + GDP_REAL_GROWTH_RATE) * (1 + GDP_INFLATION_RATE) - 1
-    gdp_lakh_crore = gdp_base_lakh_crore * (1 + nominal_growth_rate) ** (elapsed_days / 365.2425)
+    gdp_usd_trillion = GDP_BASE_USD_TRILLION * (1 + nominal_growth_rate) ** (elapsed_days / 365.2425)
+    usd_inr_rate = float(snapshot["usdInrRate"])
+    gdp_lakh_crore = gdp_usd_trillion * usd_inr_rate
     macro.update(
         {
             "marketCapCrore": round(market_cap_crore, 2),
@@ -172,15 +181,17 @@ def update_macro(payload: dict, snapshot: dict[str, float | str]) -> None:
             "gdpDate": market_date,
             "gdpBaseUsdTrillion": GDP_BASE_USD_TRILLION,
             "gdpBaseUsdInr": GDP_BASE_USD_INR,
-            "gdpBaseLakhCrore": round(gdp_base_lakh_crore, 2),
             "gdpBaseDate": GDP_BASE_DATE,
+            "gdpUsdTrillion": round(gdp_usd_trillion, 3),
+            "usdInrRate": round(usd_inr_rate, 4),
+            "usdInrDate": str(snapshot["usdInrDate"]),
             "gdpRealGrowthRate": round(GDP_REAL_GROWTH_RATE * 100, 1),
             "gdpInflationRate": round(GDP_INFLATION_RATE * 100, 1),
             "gdpNominalGrowthRate": round(nominal_growth_rate * 100, 2),
             "gdpForecastPeriod": GDP_FORECAST_PERIOD,
             "gdpEstimateSource": GDP_ESTIMATE_SOURCE,
             "gdpEstimateSourceUrl": GDP_ESTIMATE_SOURCE_URL,
-            "gdpMethod": "World Bank 2025 USD GDP converted at base-date FX and compounded using the World Bank FY2026-27 real-growth and inflation forecasts",
+            "gdpMethod": "World Bank 2025 USD GDP compounded using FY2026-27 real-growth and inflation forecasts, then converted at the latest RBI USD/INR reference rate",
             "buffettRatio": round(market_cap_lakh_crore / gdp_lakh_crore * 100, 2),
             "bondYieldDate": str(snapshot["bondYieldDate"]),
         }
