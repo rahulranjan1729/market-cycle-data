@@ -7,6 +7,7 @@ import html
 import io
 import json
 import os
+import re
 import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -43,7 +44,12 @@ ALIASES = {
 }
 
 MARKET_CAP_BASE_DATE = "2026-03-31"
-MARKET_CAP_PROXY = "NIFTY 500"
+MARKET_CAP_BASE_LAKH_CRORE = 412.43
+GDP_BASE_DATE = "2026-03-31"
+GDP_BASE_LAKH_CRORE = 346.36
+GDP_NOMINAL_GROWTH_RATE = 0.10
+BSE_URL = "https://m.bseindia.com/"
+CCIL_URL = "https://www.ccilindia.com/web/ccil/tenorwise-indicative-yields"
 
 
 def fetch_snapshot() -> dict[str, dict]:
@@ -116,70 +122,63 @@ def candidates(name: str) -> list[str]:
     return list(dict.fromkeys(value.upper() for value in expanded))
 
 
-def date_key(value: str) -> str:
-    for pattern in ("%Y-%m-%d", "%d-%b-%y"):
-        try:
-            return datetime.strptime(value, pattern).strftime("%Y-%m-%d")
-        except ValueError:
-            pass
-    return value
+def fetch_macro_snapshot() -> dict[str, float | str]:
+    session = requests.Session(impersonate="chrome131")
+    headers = {"User-Agent": "Mozilla/5.0"}
+    bse_response = session.get(BSE_URL, headers=headers, timeout=30)
+    bse_response.raise_for_status()
+    market_cap_match = re.search(r"Market Capitalization of BSE Listed Companies.*?TTRow_right'>([\d,]+)<", bse_response.text, re.DOTALL)
+    market_date_match = re.search(r'id="msdate"[^>]*>As on\s+([^|<]+)', bse_response.text)
+    if not market_cap_match or not market_date_match:
+        raise RuntimeError("BSE market capitalization was not found")
+    market_date = datetime.strptime(market_date_match.group(1).strip(), "%d %b %y").strftime("%Y-%m-%d")
+    ccil_response = session.get(CCIL_URL, headers=headers, timeout=30)
+    ccil_response.raise_for_status()
+    yield_match = re.search(r">(\d{4}-\d{2}-\d{2}|\d{2}-\d{2}-\d{4})(?: 00:00:00\.0)?</td>\s*<td[^>]*>9Y-10Y</td>\s*<td[^>]*>[^<]+</td>\s*<td[^>]*>([\d.]+)</td>", ccil_response.text)
+    if not yield_match:
+        raise RuntimeError("CCIL 9Y-10Y government-security yield was not found")
+    yield_date = yield_match.group(1)
+    if yield_date[2] == "-":
+        yield_date = datetime.strptime(yield_date, "%d-%m-%Y").strftime("%Y-%m-%d")
+    return {"marketCapCrore": float(market_cap_match.group(1).replace(",", "")), "marketCapDate": market_date, "bondYield": float(yield_match.group(2)), "bondYieldDate": yield_date}
 
 
-def point_at_or_before(history: list[dict], date: str) -> dict | None:
-    target = date_key(date)
-    return next(
-        (point for point in reversed(history) if date_key(point.get("date", "")) <= target),
-        None,
-    )
-
-
-def update_macro(payload: dict) -> None:
-    """Roll market cap forward from the FY26 year-end base using NIFTY 500."""
+def update_macro(payload: dict, snapshot: dict[str, float | str]) -> None:
+    """Apply daily BSE/CCIL data and project nominal GDP from the FY26 base."""
     macro = payload.get("macro")
     if not isinstance(macro, dict):
         return
-    proxy = next(
-        (item for item in payload.get("instruments", []) if item.get("name") == MARKET_CAP_PROXY),
-        None,
-    )
-    if not proxy or not proxy.get("history"):
-        return
-
-    base_point = point_at_or_before(proxy["history"], MARKET_CAP_BASE_DATE)
-    latest_point = proxy["history"][-1]
-    if not base_point or not base_point.get("close") or not latest_point.get("close"):
-        return
-
-    base_lakh_crore = macro.get("marketCapBaseLakhCrore")
-    if not base_lakh_crore:
-        previous_date = macro.get("marketCapDate")
-        previous_point = point_at_or_before(proxy["history"], previous_date) if previous_date else None
-        previous_cap = macro.get("marketCapLakhCrore")
-        if not previous_point or not previous_point.get("close") or not previous_cap:
-            return
-        base_lakh_crore = float(previous_cap) * float(base_point["close"]) / float(previous_point["close"])
-
-    current_lakh_crore = float(base_lakh_crore) * float(latest_point["close"]) / float(base_point["close"])
-    gdp_lakh_crore = float(macro.get("gdpLakhCrore") or 0)
+    market_cap_crore = float(snapshot["marketCapCrore"])
+    market_cap_lakh_crore = market_cap_crore / 100_000
+    market_date = str(snapshot["marketCapDate"])
+    elapsed_days = max(0, (datetime.fromisoformat(market_date) - datetime.fromisoformat(GDP_BASE_DATE)).days)
+    gdp_lakh_crore = GDP_BASE_LAKH_CRORE * (1 + GDP_NOMINAL_GROWTH_RATE) ** (elapsed_days / 365.2425)
     macro.update(
         {
-            "marketCapCrore": round(current_lakh_crore * 100_000, 2),
-            "marketCapLakhCrore": round(current_lakh_crore, 2),
-            "marketCapDate": latest_point["date"],
-            "marketCapBaseLakhCrore": round(float(base_lakh_crore), 2),
+            "marketCapCrore": round(market_cap_crore, 2),
+            "marketCapLakhCrore": round(market_cap_lakh_crore, 2),
+            "marketCapDate": market_date,
+            "marketCapBaseLakhCrore": MARKET_CAP_BASE_LAKH_CRORE,
             "marketCapBaseDate": MARKET_CAP_BASE_DATE,
-            "marketCapMethod": f"{MARKET_CAP_PROXY} change from FY26 year-end base",
-            "buffettRatio": round(current_lakh_crore / gdp_lakh_crore * 100, 2)
-            if gdp_lakh_crore
-            else None,
+            "marketCapMethod": "BSE listed-company market capitalization",
+            "gdpLakhCrore": round(gdp_lakh_crore, 2),
+            "gdpDate": market_date,
+            "gdpBaseLakhCrore": GDP_BASE_LAKH_CRORE,
+            "gdpBaseDate": GDP_BASE_DATE,
+            "gdpNominalGrowthRate": GDP_NOMINAL_GROWTH_RATE * 100,
+            "gdpMethod": "FY26 MoSPI nominal GDP projected at FY27 Budget nominal growth",
+            "buffettRatio": round(market_cap_lakh_crore / gdp_lakh_crore * 100, 2),
+            "bondYieldDate": str(snapshot["bondYieldDate"]),
         }
     )
+    payload["bondYield"] = round(float(snapshot["bondYield"]), 4)
 
 
-def update_payload(payload: dict, nse: dict[str, dict]) -> tuple[list[str], list[str], list[str]]:
+def update_payload(payload: dict, nse: dict[str, dict], macro_snapshot: dict[str, float | str]) -> tuple[list[str], list[str], list[str]]:
     updated: list[str] = []
     unchanged: list[str] = []
     missing: list[str] = []
+    update_macro(payload, macro_snapshot)
     bond_yield = float(payload.get("bondYield") or 6.8)
 
     for item in payload["instruments"]:
@@ -233,7 +232,6 @@ def update_payload(payload: dict, nse: dict[str, dict]) -> tuple[list[str], list
             }
         )
 
-    update_macro(payload)
     payload["generatedAt"] = datetime.now(UTC).isoformat()
     payload["source"] = "NSE Indices Daily Snapshot"
     return updated, unchanged, missing
@@ -263,7 +261,8 @@ def main() -> None:
     try:
         payload = json.loads(SNAPSHOT_PATH.read_text(encoding="utf-8"))
         nse = fetch_snapshot()
-        updated, unchanged, missing = update_payload(payload, nse)
+        macro_snapshot = fetch_macro_snapshot()
+        updated, unchanged, missing = update_payload(payload, nse, macro_snapshot)
         SNAPSHOT_PATH.write_text(
             json.dumps(payload, separators=(",", ":")),
             encoding="utf-8",
