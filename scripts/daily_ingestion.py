@@ -45,9 +45,11 @@ ALIASES = {
 
 MARKET_CAP_BASE_DATE = "2026-03-31"
 MARKET_CAP_BASE_LAKH_CRORE = 412.43
-GDP_BASE_DATE = "2026-03-31"
-GDP_BASE_LAKH_CRORE = 346.36
-GDP_NOMINAL_GROWTH_RATE = 0.10
+GDP_BASE_DATE = "2025-03-31"
+GDP_BASE_USD_TRILLION = 3.96
+GDP_BASE_USD_INR = 85.47
+GDP_REAL_GROWTH_RATE = 0.06
+GDP_INFLATION_RATE = 0.06
 BSE_URL = "https://m.bseindia.com/"
 CCIL_URL = "https://www.ccilindia.com/web/ccil/tenorwise-indicative-yields"
 
@@ -144,7 +146,7 @@ def fetch_macro_snapshot() -> dict[str, float | str]:
 
 
 def update_macro(payload: dict, snapshot: dict[str, float | str]) -> None:
-    """Apply daily BSE/CCIL data and project nominal GDP from the FY26 base."""
+    """Apply daily BSE/CCIL data and project GDP from the World Bank USD base."""
     macro = payload.get("macro")
     if not isinstance(macro, dict):
         return
@@ -152,7 +154,9 @@ def update_macro(payload: dict, snapshot: dict[str, float | str]) -> None:
     market_cap_lakh_crore = market_cap_crore / 100_000
     market_date = str(snapshot["marketCapDate"])
     elapsed_days = max(0, (datetime.fromisoformat(market_date) - datetime.fromisoformat(GDP_BASE_DATE)).days)
-    gdp_lakh_crore = GDP_BASE_LAKH_CRORE * (1 + GDP_NOMINAL_GROWTH_RATE) ** (elapsed_days / 365.2425)
+    gdp_base_lakh_crore = GDP_BASE_USD_TRILLION * GDP_BASE_USD_INR
+    nominal_growth_rate = (1 + GDP_REAL_GROWTH_RATE) * (1 + GDP_INFLATION_RATE) - 1
+    gdp_lakh_crore = gdp_base_lakh_crore * (1 + nominal_growth_rate) ** (elapsed_days / 365.2425)
     macro.update(
         {
             "marketCapCrore": round(market_cap_crore, 2),
@@ -163,10 +167,14 @@ def update_macro(payload: dict, snapshot: dict[str, float | str]) -> None:
             "marketCapMethod": "BSE listed-company market capitalization",
             "gdpLakhCrore": round(gdp_lakh_crore, 2),
             "gdpDate": market_date,
-            "gdpBaseLakhCrore": GDP_BASE_LAKH_CRORE,
+            "gdpBaseUsdTrillion": GDP_BASE_USD_TRILLION,
+            "gdpBaseUsdInr": GDP_BASE_USD_INR,
+            "gdpBaseLakhCrore": round(gdp_base_lakh_crore, 2),
             "gdpBaseDate": GDP_BASE_DATE,
-            "gdpNominalGrowthRate": GDP_NOMINAL_GROWTH_RATE * 100,
-            "gdpMethod": "FY26 MoSPI nominal GDP projected at FY27 Budget nominal growth",
+            "gdpRealGrowthRate": GDP_REAL_GROWTH_RATE * 100,
+            "gdpInflationRate": GDP_INFLATION_RATE * 100,
+            "gdpNominalGrowthRate": round(nominal_growth_rate * 100, 2),
+            "gdpMethod": "World Bank 2025 USD GDP converted at base-date FX and compounded by real growth plus inflation",
             "buffettRatio": round(market_cap_lakh_crore / gdp_lakh_crore * 100, 2),
             "bondYieldDate": str(snapshot["bondYieldDate"]),
         }
