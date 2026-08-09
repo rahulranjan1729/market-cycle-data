@@ -48,8 +48,11 @@ MARKET_CAP_BASE_LAKH_CRORE = 412.43
 GDP_BASE_DATE = "2025-03-31"
 GDP_BASE_USD_TRILLION = 3.96
 GDP_BASE_USD_INR = 85.47
-GDP_REAL_GROWTH_RATE = 0.06
-GDP_INFLATION_RATE = 0.06
+GDP_REAL_GROWTH_RATE = 0.066
+GDP_INFLATION_RATE = 0.049
+GDP_FORECAST_PERIOD = "FY2026-27"
+GDP_ESTIMATE_SOURCE = "World Bank India Development Update, April 2026"
+GDP_ESTIMATE_SOURCE_URL = "https://thedocs.worldbank.org/en/doc/4262e1e15b463ecb360cec4ad78cf062-0310012026/original/April-2026-India-Development-Update.pdf"
 BSE_URL = "https://m.bseindia.com/"
 CCIL_URL = "https://www.ccilindia.com/web/ccil/tenorwise-indicative-yields"
 
@@ -171,10 +174,13 @@ def update_macro(payload: dict, snapshot: dict[str, float | str]) -> None:
             "gdpBaseUsdInr": GDP_BASE_USD_INR,
             "gdpBaseLakhCrore": round(gdp_base_lakh_crore, 2),
             "gdpBaseDate": GDP_BASE_DATE,
-            "gdpRealGrowthRate": GDP_REAL_GROWTH_RATE * 100,
-            "gdpInflationRate": GDP_INFLATION_RATE * 100,
+            "gdpRealGrowthRate": round(GDP_REAL_GROWTH_RATE * 100, 1),
+            "gdpInflationRate": round(GDP_INFLATION_RATE * 100, 1),
             "gdpNominalGrowthRate": round(nominal_growth_rate * 100, 2),
-            "gdpMethod": "World Bank 2025 USD GDP converted at base-date FX and compounded by real growth plus inflation",
+            "gdpForecastPeriod": GDP_FORECAST_PERIOD,
+            "gdpEstimateSource": GDP_ESTIMATE_SOURCE,
+            "gdpEstimateSourceUrl": GDP_ESTIMATE_SOURCE_URL,
+            "gdpMethod": "World Bank 2025 USD GDP converted at base-date FX and compounded using the World Bank FY2026-27 real-growth and inflation forecasts",
             "buffettRatio": round(market_cap_lakh_crore / gdp_lakh_crore * 100, 2),
             "bondYieldDate": str(snapshot["bondYieldDate"]),
         }
