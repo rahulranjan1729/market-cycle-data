@@ -1,19 +1,22 @@
-name: Daily NSE market ingestion
+name: Independent market data feeds
 
 on:
   schedule:
+    # 05:00 and 17:00 IST on Indian weekdays.
+    - cron: "30 23 * * 0-4"
     - cron: "30 11 * * 1-5"
   workflow_dispatch:
 
 concurrency:
-  group: daily-market-ingestion
+  group: market-data-feeds
   cancel-in-progress: false
 
 permissions:
   contents: write
 
 jobs:
-  ingest:
+  indices:
+    name: Index price and PE
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -21,18 +24,81 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      - name: Install NSE ingestion dependency
-        run: python -m pip install "curl-cffi>=0.13,<1"
-      - name: Refresh public market snapshot
-        run: python scripts/daily_ingestion.py
-      - name: Commit refreshed data
+      - run: python -m pip install "curl-cffi>=0.13,<1"
+      - name: Update index price and PE
+        id: feed
+        run: python scripts/feed_ingestion.py --feed indices
+      - name: Publish index data and status
+        if: always()
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add market-data.json
+          git add market-data.json data-status.json
           if git diff --staged --quiet; then
-            echo "NSE snapshot already current"
+            echo "No index or status changes"
           else
-            git commit -m "data: refresh NSE indices"
+            git commit -m "data: refresh index feed [skip ci]"
+            git push
+          fi
+
+  bond:
+    name: India 10Y bond yield
+    needs: indices
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: main
+      - name: Include preceding feed output
+        run: git pull --ff-only origin main
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: python -m pip install "curl-cffi>=0.13,<1"
+      - name: Update bond yield
+        run: python scripts/feed_ingestion.py --feed bond
+      - name: Publish bond data and status
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add market-data.json data-status.json
+          if git diff --staged --quiet; then
+            echo "No bond or status changes"
+          else
+            git commit -m "data: refresh bond feed [skip ci]"
+            git push
+          fi
+
+  market-cap:
+    name: BSE market cap and RBI FX
+    needs: bond
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: main
+      - name: Include preceding feed output
+        run: git pull --ff-only origin main
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: python -m pip install "curl-cffi>=0.13,<1"
+      - name: Update market cap
+        run: python scripts/feed_ingestion.py --feed market-cap
+      - name: Publish market-cap data and status
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add market-data.json data-status.json
+          if git diff --staged --quiet; then
+            echo "No market-cap or status changes"
+          else
+            git commit -m "data: refresh market-cap feed [skip ci]"
             git push
           fi
