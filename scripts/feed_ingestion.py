@@ -110,6 +110,9 @@ def update_bond(payload: dict) -> tuple[bool, str, str]:
     changed = payload.get("bondYield") != result["value"] or macro.get("bondYieldDate") != result["date"]
     payload["bondYield"] = result["value"]
     macro["bondYieldDate"] = result["date"]
+    if changed:
+        for item in payload.get("instruments", []):
+            item["dow"] = dow_signals(item["close"], item.get("pe"), item.get("patterns", []), result["value"])
     return changed, result["date"], f"yield={result['value']}%"
 
 
