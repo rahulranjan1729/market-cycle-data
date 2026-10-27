@@ -2,8 +2,10 @@ name: Independent market data feeds
 
 on:
   schedule:
-    # 08:00 and 23:30 IST on Indian weekdays.
+    # 08:00 IST morning check, 19:00 IST post-market, 20:30 IST catchup, 23:30 IST day-end on Indian weekdays.
     - cron: "30 2 * * 1-5"
+    - cron: "30 13 * * 1-5"
+    - cron: "0 15 * * 1-5"
     - cron: "0 18 * * 1-5"
   workflow_dispatch:
 
