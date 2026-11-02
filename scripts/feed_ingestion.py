@@ -4,42 +4,66 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
-
-from curl_cffi import requests
 
 ROOT = Path(__file__).resolve().parents[1]
 SNAPSHOT_PATH = ROOT / "market-data.json"
 STATUS_PATH = ROOT / "data-status.json"
 sys.path.insert(0, str(ROOT))
 
-from scripts.daily_ingestion import (  # noqa: E402
-    BSE_URL,
-    CCIL_URL,
-    GDP_BASE_DATE,
-    GDP_BASE_USD_INR,
-    GDP_BASE_USD_TRILLION,
-    GDP_ESTIMATE_SOURCE,
-    GDP_ESTIMATE_SOURCE_URL,
-    GDP_FORECAST_PERIOD,
-    GDP_INFLATION_RATE,
-    GDP_REAL_GROWTH_RATE,
-    MARKET_CAP_BASE_DATE,
-    MARKET_CAP_BASE_LAKH_CRORE,
-    RBI_URL,
-    candidates,
-    fetch_snapshot,
-)
-from scripts.export_market_data import classify, dow_signals, identify_patterns, yearly_analysis  # noqa: E402
+IST = timezone(timedelta(hours=5, minutes=30))
+
+
+def get_target_trading_date(now: datetime | None = None) -> str:
+    """Return the ISO date string (YYYY-MM-DD) of the expected completed trading day.
+
+    NSE equity trading operates Mon-Fri 09:15 - 15:30 IST.
+    EOD closing reports and PE ratios are typically published between 17:30 and 19:30 IST.
+    - Mon-Fri at or after 17:00 IST: today is the target trading day.
+    - Mon-Fri before 17:00 IST: today's market has not closed; latest completed is prior weekday.
+    - Sat-Sun: latest completed is Friday.
+    """
+    if now is None:
+        now = datetime.now(IST)
+    else:
+        now = now.astimezone(IST)
+
+    weekday = now.weekday()
+    if weekday < 5 and (now.hour > 17 or (now.hour == 17 and now.minute >= 0)):
+        return now.date().isoformat()
+
+    days_back = 1
+    if weekday == 0:
+        days_back = 3
+    elif weekday == 6:
+        days_back = 2
+    elif weekday == 5:
+        days_back = 1
+
+    return (now - timedelta(days=days_back)).date().isoformat()
 
 
 def load_status() -> dict:
     if STATUS_PATH.exists():
         return json.loads(STATUS_PATH.read_text(encoding="utf-8"))
     return {"feeds": {}}
+
+
+def is_feed_up_to_date(feed: str, target_date: str) -> bool:
+    status = load_status()
+    feed_status = status.get("feeds", {}).get(feed, {})
+    return (
+        feed_status.get("status") == "success"
+        and feed_status.get("dataDate") == target_date
+    )
+
+
+def are_all_feeds_up_to_date(target_date: str) -> bool:
+    return all(is_feed_up_to_date(f, target_date) for f in ("indices", "bond", "market-cap"))
 
 
 def save_status(feed: str, state: str, data_date: str | None, message: str) -> None:
@@ -55,6 +79,9 @@ def save_status(feed: str, state: str, data_date: str | None, message: str) -> N
 
 
 def update_indices(payload: dict) -> tuple[bool, str, str]:
+    from scripts.daily_ingestion import candidates, fetch_snapshot
+    from scripts.export_market_data import classify, dow_signals, identify_patterns, yearly_analysis
+
     nse = fetch_snapshot()
     updated = unchanged = missing = 0
     bond_yield = float(payload.get("bondYield") or 6.8)
@@ -93,6 +120,9 @@ def update_indices(payload: dict) -> tuple[bool, str, str]:
 
 
 def fetch_bond() -> dict:
+    from curl_cffi import requests
+    from scripts.daily_ingestion import CCIL_URL
+
     response = requests.Session(impersonate="chrome131").get(CCIL_URL, headers={"User-Agent": "Mozilla/5.0"}, timeout=30)
     response.raise_for_status()
     match = re.search(r">(\d{4}-\d{2}-\d{2}|\d{2}-\d{2}-\d{4})(?: 00:00:00\.0)?</td>\s*<td[^>]*>9Y-10Y</td>\s*<td[^>]*>[^<]+</td>\s*<td[^>]*>([\d.]+)</td>", response.text)
@@ -105,6 +135,8 @@ def fetch_bond() -> dict:
 
 
 def update_bond(payload: dict) -> tuple[bool, str, str]:
+    from scripts.export_market_data import dow_signals
+
     result = fetch_bond()
     macro = payload.get("macro", {})
     changed = payload.get("bondYield") != result["value"] or macro.get("bondYieldDate") != result["date"]
@@ -117,6 +149,22 @@ def update_bond(payload: dict) -> tuple[bool, str, str]:
 
 
 def update_market_cap(payload: dict) -> tuple[bool, str, str]:
+    from curl_cffi import requests
+    from scripts.daily_ingestion import (
+        BSE_URL,
+        GDP_BASE_DATE,
+        GDP_BASE_USD_INR,
+        GDP_BASE_USD_TRILLION,
+        GDP_ESTIMATE_SOURCE,
+        GDP_ESTIMATE_SOURCE_URL,
+        GDP_FORECAST_PERIOD,
+        GDP_INFLATION_RATE,
+        GDP_REAL_GROWTH_RATE,
+        MARKET_CAP_BASE_DATE,
+        MARKET_CAP_BASE_LAKH_CRORE,
+        RBI_URL,
+    )
+
     session = requests.Session(impersonate="chrome131")
     headers = {"User-Agent": "Mozilla/5.0"}
     bse = session.get(BSE_URL, headers=headers, timeout=30)
@@ -146,9 +194,35 @@ def update_market_cap(payload: dict) -> tuple[bool, str, str]:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--feed", required=True, choices=("indices", "bond", "market-cap"))
-    feed = parser.parse_args().feed
+    parser = argparse.ArgumentParser(description="Independent market-data feed ingestion.")
+    parser.add_argument("--feed", choices=("indices", "bond", "market-cap"), help="Run specific feed")
+    parser.add_argument("--check-all", action="store_true", help="Check if all feeds are up to date for target date")
+    parser.add_argument("--force", action="store_true", help="Force execution even if already up to date")
+    args = parser.parse_args()
+
+    target_date = get_target_trading_date()
+
+    if args.check_all:
+        all_done = are_all_feeds_up_to_date(target_date)
+        github_output = os.environ.get("GITHUB_OUTPUT")
+        if github_output:
+            with open(github_output, "a", encoding="utf-8") as f:
+                f.write(f"target_date={target_date}\n")
+                f.write(f"should_run={'false' if all_done else 'true'}\n")
+        if all_done:
+            print(f"ALL_UP_TO_DATE: All feeds are already up to date for target date {target_date}. Stopping batch until tomorrow.")
+        else:
+            print(f"NEEDS_UPDATE: Feeds pending update for target date {target_date}. Proceeding with batch.")
+        return
+
+    if not args.feed:
+        parser.error("Either --feed or --check-all must be specified")
+
+    feed = args.feed
+    if not args.force and is_feed_up_to_date(feed, target_date):
+        print(f"FEED_UP_TO_DATE: Feed '{feed}' is already up to date for target date {target_date}. Skipping.")
+        return
+
     try:
         payload = json.loads(SNAPSHOT_PATH.read_text(encoding="utf-8"))
         changed, data_date, message = {"indices": update_indices, "bond": update_bond, "market-cap": update_market_cap}[feed](payload)

@@ -2,12 +2,17 @@ name: Independent market data feeds
 
 on:
   schedule:
-    # 08:00 IST morning check, 19:00 IST post-market, 20:30 IST catchup, 23:30 IST day-end on Indian weekdays.
-    - cron: "30 2 * * 1-5"
-    - cron: "30 13 * * 1-5"
-    - cron: "0 15 * * 1-5"
-    - cron: "0 18 * * 1-5"
+    # Hourly runs during post-market window (17:45 IST to 23:45 IST / 12:15 to 18:15 UTC)
+    # plus morning catchup runs at 07:45 IST and 08:45 IST (02:15 and 03:15 UTC) on Indian weekdays.
+    - cron: "15 12-18 * * 1-5"
+    - cron: "15 2-3 * * 1-5"
   workflow_dispatch:
+    inputs:
+      force:
+        description: "Force ingestion even if data is already up to date"
+        required: false
+        type: boolean
+        default: false
 
 concurrency:
   group: market-data-feeds
@@ -17,8 +22,34 @@ permissions:
   contents: write
 
 jobs:
+  check:
+    name: Check if update is needed
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      should_run: ${{ steps.check_status.outputs.should_run }}
+      target_date: ${{ steps.check_status.outputs.target_date }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Check feed completion
+        id: check_status
+        env:
+          FORCE: ${{ github.event.inputs.force }}
+        run: |
+          if [ "$FORCE" = "true" ]; then
+            echo "Force flag is set. Proceeding with ingestion batch."
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+          else
+            python scripts/feed_ingestion.py --check-all
+          fi
+
   indices:
     name: Index price and PE
+    needs: check
+    if: needs.check.outputs.should_run == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -29,7 +60,12 @@ jobs:
       - run: python -m pip install "curl-cffi>=0.13,<1"
       - name: Update index price and PE
         id: feed
-        run: python scripts/feed_ingestion.py --feed indices
+        env:
+          FORCE: ${{ github.event.inputs.force }}
+        run: |
+          FORCE_ARG=""
+          if [ "$FORCE" = "true" ]; then FORCE_ARG="--force"; fi
+          python scripts/feed_ingestion.py --feed indices $FORCE_ARG
       - name: Publish index data and status
         if: always()
         run: |
@@ -45,8 +81,8 @@ jobs:
 
   bond:
     name: India 10Y bond yield
-    needs: indices
-    if: always()
+    needs: [check, indices]
+    if: always() && !cancelled() && needs.check.outputs.should_run == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -60,7 +96,12 @@ jobs:
           python-version: "3.12"
       - run: python -m pip install "curl-cffi>=0.13,<1"
       - name: Update bond yield
-        run: python scripts/feed_ingestion.py --feed bond
+        env:
+          FORCE: ${{ github.event.inputs.force }}
+        run: |
+          FORCE_ARG=""
+          if [ "$FORCE" = "true" ]; then FORCE_ARG="--force"; fi
+          python scripts/feed_ingestion.py --feed bond $FORCE_ARG
       - name: Publish bond data and status
         if: always()
         run: |
@@ -76,8 +117,8 @@ jobs:
 
   market-cap:
     name: BSE market cap and RBI FX
-    needs: bond
-    if: always()
+    needs: [check, bond]
+    if: always() && !cancelled() && needs.check.outputs.should_run == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -91,7 +132,12 @@ jobs:
           python-version: "3.12"
       - run: python -m pip install "curl-cffi>=0.13,<1"
       - name: Update market cap
-        run: python scripts/feed_ingestion.py --feed market-cap
+        env:
+          FORCE: ${{ github.event.inputs.force }}
+        run: |
+          FORCE_ARG=""
+          if [ "$FORCE" = "true" ]; then FORCE_ARG="--force"; fi
+          python scripts/feed_ingestion.py --feed market-cap $FORCE_ARG
       - name: Publish market-cap data and status
         if: always()
         run: |
