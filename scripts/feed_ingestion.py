@@ -114,7 +114,7 @@ def update_indices(payload: dict) -> tuple[bool, str, str]:
         previous = history[-2] if len(history) > 1 else latest
         trend, phase, score = classify(prices)
         patterns = identify_patterns(weekly[-160:], float(item.get("depthPct", 0.04)))
-        item.update({"asOf": latest["date"], "close": latest["close"], "pe": latest["pe"], "change": round((latest["close"] / previous["close"] - 1) * 100, 2), "trend": trend, "phase": phase, "score": score, "analysis": yearly_analysis(history), "patterns": patterns, "dow": dow_signals(latest["close"], latest["pe"], patterns, bond_yield)})
+        item.update({"asOf": latest["date"], "close": latest["close"], "pe": latest["pe"], "change": round((latest["close"] / previous["close"] - 1) * 100, 2), "trend": trend, "phase": phase, "score": score, "analysis": yearly_analysis(history), "patterns": patterns, "dow": dow_signals(latest["close"], latest["pe"], patterns, bond_yield, name=item["name"], history=history)})
     data_date = max(record["date"] for record in nse.values())
     return updated > 0, data_date, f"updated={updated}, duplicate={unchanged}, missing={missing}"
 
@@ -144,7 +144,7 @@ def update_bond(payload: dict) -> tuple[bool, str, str]:
     macro["bondYieldDate"] = result["date"]
     if changed:
         for item in payload.get("instruments", []):
-            item["dow"] = dow_signals(item["close"], item.get("pe"), item.get("patterns", []), result["value"])
+            item["dow"] = dow_signals(item["close"], item.get("pe"), item.get("patterns", []), result["value"], name=item["name"], history=item.get("history", []))
     return changed, result["date"], f"yield={result['value']}%"
 
 

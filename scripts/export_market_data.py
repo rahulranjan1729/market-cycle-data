@@ -108,19 +108,38 @@ def dow_signals(
     current_pe: float | None,
     patterns: list[dict],
     bond_yield: float,
+    name: str = "",
+    history: list[dict] | None = None,
 ) -> dict:
     last_top = next((item for item in reversed(patterns) if item["type"] == "Top"), None)
     last_bottom = next((item for item in reversed(patterns) if item["type"] == "Bottom"), None)
-    base_pe = 100 / bond_yield
-    mid_bottom = base_pe + 5
-    high_bottom = base_pe + 10
+
+    if name == "NIFTY 50" or not history:
+        base_pe = 100 / bond_yield
+        low_below = base_pe + 5
+        high_above = base_pe + 10
+        method = "10Y G-Sec Bond Yield Model"
+    else:
+        valid_pes = sorted(float(p["pe"]) for p in history if p.get("pe") is not None and float(p["pe"]) > 0)
+        if len(valid_pes) >= 50:
+            n = len(valid_pes)
+            low_below = valid_pes[int(n * 0.25)]
+            base_pe = valid_pes[int(n * 0.50)]
+            high_above = valid_pes[int(n * 0.75)]
+            method = "Historical Sector PE Percentiles (25th/75th)"
+        else:
+            base_pe = 100 / bond_yield
+            low_below = base_pe + 5
+            high_above = base_pe + 10
+            method = "10Y G-Sec Bond Yield Model (Fallback)"
+
     pe_category = (
         "N/A"
         if current_pe is None
         else "HIGH"
-        if current_pe >= high_bottom
+        if current_pe >= high_above
         else "MID"
-        if current_pe >= mid_bottom
+        if current_pe >= low_below
         else "LOW"
     )
 
@@ -135,8 +154,6 @@ def dow_signals(
         sip_signal = "Continue normal SIP"
     elif pe_category == "HIGH":
         sip_signal = "Stop SIP / wait"
-    elif current_pe is not None and current_pe < base_pe + 2.5:
-        sip_signal = "Increase SIP to 3×"
     elif pe_category == "LOW":
         sip_signal = "Increase SIP to 2×"
     else:
@@ -148,9 +165,10 @@ def dow_signals(
         "peCategory": pe_category,
         "peRanges": {
             "base": round(base_pe, 2),
-            "lowBelow": round(mid_bottom, 2),
-            "midTop": round(high_bottom, 2),
-            "highAbove": round(high_bottom, 2),
+            "lowBelow": round(low_below, 2),
+            "midTop": round(high_above, 2),
+            "highAbove": round(high_above, 2),
+            "method": method,
         },
         "inMarket": in_signal,
         "outMarket": out_signal,
@@ -287,6 +305,8 @@ def export(database: Path, output: Path, config_path: Path | None, macro_path: P
                     float(latest["pe"]) if latest["pe"] else None,
                     patterns,
                     bond_yield,
+                    name=name,
+                    history=history,
                 ),
             }
         )
