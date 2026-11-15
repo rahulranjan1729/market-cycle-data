@@ -104,10 +104,22 @@ def fetch_snapshot() -> dict[str, dict]:
             pe = float(raw_pe) if raw_pe not in {"", "-", "nan"} else None
         except ValueError:
             pe = None
+        raw_pb = (row.get("P/B") or "").strip()
+        try:
+            pb = float(raw_pb) if raw_pb not in {"", "-", "nan"} else None
+        except ValueError:
+            pb = None
+        raw_div = (row.get("Div Yield") or "").strip()
+        try:
+            div_yield = float(raw_div) if raw_div not in {"", "-", "nan"} else None
+        except ValueError:
+            div_yield = None
         records[row["Index Name"].strip().upper()] = {
             "date": date.strftime("%Y-%m-%d"),
             "close": round(close, 2),
             "pe": round(pe, 2) if pe and pe > 0 else None,
+            "pb": round(pb, 2) if pb and pb > 0 else None,
+            "divYield": round(div_yield, 2) if div_yield is not None else None,
         }
     if not records:
         raise RuntimeError("NSE snapshot CSV contained no usable index records")
@@ -245,6 +257,8 @@ def update_payload(payload: dict, nse: dict[str, dict], macro_snapshot: dict[str
                 "asOf": latest["date"],
                 "close": latest["close"],
                 "pe": latest["pe"],
+                "pb": latest.get("pb"),
+                "divYield": latest.get("divYield"),
                 "change": round((latest["close"] / previous["close"] - 1) * 100, 2),
                 "trend": trend,
                 "phase": phase,
