@@ -143,12 +143,25 @@ def dow_signals(
         else "LOW"
     )
 
+    buy_pct = 50
+    sell_pct = 50
+    if current_pe is not None and high_bottom > mid_bottom:
+        if current_pe <= mid_bottom:
+            buy_pct = 100
+            sell_pct = 0
+        elif current_pe >= high_bottom:
+            buy_pct = 0
+            sell_pct = 100
+        else:
+            buy_pct = round(((high_bottom - current_pe) / (high_bottom - mid_bottom)) * 100)
+            sell_pct = 100 - buy_pct
+
     in_signal = "HOLD / NO ACTION"
     out_signal = "WAIT / NO ACTION"
     if last_bottom and current_price < last_bottom["b"]["price"]:
-        in_signal = {"HIGH": "SELL 100%", "MID": "SELL 50%", "LOW": "SELL 0%"}.get(pe_category, "SELL")
+        in_signal = f"SELL {sell_pct}%" if sell_pct > 0 else "HOLD / NO ACTION"
     if last_top and current_price > last_top["b"]["price"]:
-        out_signal = {"HIGH": "BUY 0%", "MID": "BUY 50%", "LOW": "BUY 100%"}.get(pe_category, "BUY")
+        out_signal = f"BUY {buy_pct}%" if buy_pct > 0 else "BUY 0%"
 
     if pe_category == "MID":
         sip_signal = "Continue normal SIP"
