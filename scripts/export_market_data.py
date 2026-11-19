@@ -149,15 +149,15 @@ def dow_signals(
 
     buy_pct = 50
     sell_pct = 50
-    if current_pe is not None and high_bottom > mid_bottom:
-        if current_pe <= mid_bottom:
+    if current_pe is not None and high_above > low_below:
+        if current_pe <= low_below:
             buy_pct = 100
             sell_pct = 0
-        elif current_pe >= high_bottom:
+        elif current_pe >= high_above:
             buy_pct = 0
             sell_pct = 100
         else:
-            buy_pct = round(((high_bottom - current_pe) / (high_bottom - mid_bottom)) * 100)
+            buy_pct = round(((high_above - current_pe) / (high_above - low_below)) * 100)
             sell_pct = 100 - buy_pct
 
     in_signal = "HOLD / NO ACTION"
